@@ -1,0 +1,48 @@
+{
+  "cases": [
+    {
+      "name": "tenant-a-finance",
+      "identity": {
+        "subject": "alice",
+        "tenant": "tenant-a",
+        "roles": ["finance-reader"]
+      },
+      "query": "quarterly revenue",
+      "allowed_document_ids": ["a-finance-1", "a-public-1"],
+      "denied_document_ids": ["b-finance-1", "a-hr-1"]
+    },
+    {
+      "name": "tenant-b-finance",
+      "identity": {
+        "subject": "bob",
+        "tenant": "tenant-b",
+        "roles": ["finance-reader"]
+      },
+      "query": "quarterly revenue",
+      "allowed_document_ids": ["b-finance-1", "b-public-1"],
+      "denied_document_ids": ["a-finance-1", "b-hr-1"]
+    },
+    {
+      "name": "tenant-a-role-downgrade",
+      "identity": {
+        "subject": "alice",
+        "tenant": "tenant-a",
+        "roles": ["employee"]
+      },
+      "query": "payroll policy",
+      "allowed_document_ids": ["a-public-1"],
+      "denied_document_ids": ["a-hr-1", "a-finance-1"]
+    },
+    {
+      "name": "tenant-a-revoked-document",
+      "identity": {
+        "subject": "alice",
+        "tenant": "tenant-a",
+        "roles": ["finance-reader"]
+      },
+      "query": "legacy forecast",
+      "allowed_document_ids": ["a-public-1"],
+      "denied_document_ids": ["a-finance-revoked"]
+    }
+  ]
+}
