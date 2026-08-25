@@ -1,0 +1,16 @@
+{
+  "responses": {
+    "tenant-a-finance": [
+      {"document_id": "a-finance-1", "chunk_id": "chunk-1"},
+      {"document_id": "a-public-1", "chunk_id": "chunk-2"},
+      {"document_id": "b-finance-1", "chunk_id": "cross-tenant-leak"}
+    ],
+    "tenant-b-finance": [
+      {"document_id": "b-finance-1", "chunk_id": "chunk-1"}
+    ],
+    "tenant-a-role-downgrade": [
+      {"document_id": "a-public-1", "chunk_id": "chunk-3"}
+    ],
+    "tenant-a-revoked-document": []
+  }
+}
