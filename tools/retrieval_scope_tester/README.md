@@ -1,39 +1,37 @@
 # Retrieval Scope Tester
 
-A small, provider-agnostic proof of concept for testing **retrieval-scope enforcement** in RAG systems before any LLM or generation layer is involved.
+A provider-agnostic reference implementation for testing **retrieval-scope enforcement** in RAG systems before any LLM or generation layer is involved.
 
-This addresses the gap described in OWASP AI Exchange issue #211: a RAG application can appear safe at the prompt/model layer while its retriever or vector index still returns chunks that the current identity should not be able to access.
+It addresses the gap described in OWASP AI Exchange issue #211: a RAG application can appear safe at the prompt/model layer while its retriever or vector index still returns chunks that the current identity should not be able to access.
 
-## Security property being tested
+## Security property
 
-For a given subject, tenant and role set:
+For every retrieval result:
 
-> Every document returned by the retrieval layer must be within the document scope authorised for that identity.
+```text
+authorised(identity, document_id, chunk_id, tenant) == true
+```
 
-A test fails as soon as the retriever returns a document outside the expected allow-list. This includes cross-tenant retrieval, privilege-boundary failures and stale access after a document is de-permissioned.
+The tester evaluates the retrieval result itself. A downstream model refusing to quote or use an unauthorised chunk does not make the retrieval safe because the data has already crossed the retrieval trust boundary.
 
-The tester deliberately evaluates the **retrieval result itself**. A downstream model refusing to quote or use an unauthorised chunk does not make the retrieval safe because the data has already crossed the retrieval trust boundary.
+## Baseline checks
 
-## Included test scenarios
+The bundled plan covers:
 
-The example plan contains four baseline cases:
+- `RAG-AUTH-001` Cross-tenant retrieval isolation.
+- `RAG-AUTH-002` Chunk-level ACL enforcement, including different chunks from the same document.
+- `RAG-AUTH-003` Role downgrade / least-privilege propagation.
+- `RAG-AUTH-004` Permission revocation / stale-index access.
 
-1. Same-tenant authorised retrieval.
-2. Cross-tenant isolation.
-3. Role downgrade / least-privilege enforcement.
-4. Revoked-document or ACL-change propagation.
-
-These are examples, not a complete RAG security test suite.
+The lifecycle cases run multiple query steps so access can be compared before and after a role or ACL change.
 
 ## Requirements
 
-Python 3.10+.
-
-No third-party packages are required.
+Python 3.10+. No third-party Python packages are required.
 
 ## Offline demonstration
 
-Run the secure fixture:
+Secure fixture:
 
 ```bash
 python tools/retrieval_scope_tester/retrieval_scope_tester.py \
@@ -43,7 +41,7 @@ python tools/retrieval_scope_tester/retrieval_scope_tester.py \
 
 Expected exit code: `0`.
 
-Run the deliberately vulnerable fixture:
+Deliberately vulnerable fixture:
 
 ```bash
 python tools/retrieval_scope_tester/retrieval_scope_tester.py \
@@ -51,78 +49,136 @@ python tools/retrieval_scope_tester/retrieval_scope_tester.py \
   --fixture tools/retrieval_scope_tester/examples/fixture_vulnerable.json
 ```
 
-Expected exit code: `2`. The report identifies the out-of-scope document returned for the affected identity.
+Expected exit code: `2`.
 
-## Connecting a real retriever or vector index
+The vulnerable fixture demonstrates four failures: cross-tenant leakage, an unauthorised chunk from an otherwise allowed document, stale finance access after role downgrade, and stale access after permission revocation.
 
-Use `--command` to invoke a small adapter for the retrieval technology under test:
+## Direct HTTP retrieval adapter
+
+For a retriever or vector-search service that exposes a JSON endpoint, use the built-in HTTP adapter:
 
 ```bash
 python tools/retrieval_scope_tester/retrieval_scope_tester.py \
-  --plan my_test_plan.json \
-  --command "python my_vector_store_adapter.py"
+  --plan tools/retrieval_scope_tester/examples/test_plan.json \
+  --http-config tools/retrieval_scope_tester/examples/http_config.example.json
 ```
 
-For every test case, the tester sends one JSON object to the adapter on standard input:
+Example configuration:
 
 ```json
 {
-  "query": "quarterly revenue",
-  "identity": {
-    "subject": "alice",
-    "tenant": "tenant-a",
-    "roles": ["finance-reader"]
+  "url": "http://localhost:8080/retrieve",
+  "chunks_field": "chunks",
+  "headers": {
+    "X-User-ID": "{subject}",
+    "X-Tenant-ID": "{tenant}",
+    "X-Roles": "{roles}"
   }
 }
 ```
 
-The adapter must query the **retrieval/index layer directly** using the identity and filters that the application would normally apply, then return:
+The placeholders `{subject}`, `{tenant}` and `{roles}` are populated from each test identity.
+
+The endpoint receives a JSON POST containing the case, step, query and identity, and must return a chunk list such as:
 
 ```json
 {
   "chunks": [
     {
       "document_id": "a-finance-1",
-      "chunk_id": "chunk-17"
+      "chunk_id": "revenue-q4",
+      "tenant": "tenant-a"
     }
   ]
 }
 ```
 
-Only `document_id` is mandatory. Extra fields are retained by the adapter but are not required by the evaluator.
+This adapter is intentionally generic. It does not require OpenAI, an OpenAI SDK, an LLM provider, or any particular vector database.
 
-This command-adapter boundary keeps the test harness independent of Pinecone, Weaviate, Qdrant, Elasticsearch, OpenSearch, pgvector, Chroma or any other retrieval backend.
+## Command adapter
 
-## Test plan format
+For systems that need custom authentication, SDKs, query filters or provider-specific calls, use `--command`:
 
-Each case defines the identity, query and expected document scope:
+```bash
+python tools/retrieval_scope_tester/retrieval_scope_tester.py \
+  --plan my_test_plan.json \
+  --command "python my_retriever_adapter.py"
+```
+
+The request JSON is written to the adapter on stdin. The adapter prints a JSON object containing `chunks`.
+
+This keeps the evaluator independent of Pinecone, Weaviate, Qdrant, Elasticsearch, OpenSearch, pgvector, Chroma, or any other retrieval backend.
+
+## Chunk-level scope
+
+Prefer `allowed_resources` and `denied_resources` for new tests.
+
+A resource can be written as:
+
+```json
+"allowed_resources": [
+  "a-handbook#public-benefits",
+  {
+    "document_id": "a-public-1",
+    "chunk_id": "overview"
+  }
+]
+```
+
+A document-only reference such as `a-public-1` authorises any returned chunk from that document. A `document_id#chunk_id` reference authorises only that exact chunk.
+
+The older `allowed_document_ids` and `denied_document_ids` fields remain supported for compatibility.
+
+## Lifecycle testing
+
+A case can contain multiple steps. This allows the same test to prove that a security state change is enforced by the retrieval layer instead of merely checking an already-changed static identity.
+
+For offline fixtures, the before/after states are modelled directly in the fixture.
+
+For a live target, provide `--mutator-command` when a step contains a `mutation`. The mutator receives JSON describing the case, step, requested mutation and identity. It can update a source ACL, IAM binding, application policy or test fixture. After the hook succeeds, the tester queries the retriever again and evaluates the post-change result.
+
+Example mutation:
 
 ```json
 {
-  "name": "tenant-a-finance",
-  "identity": {
-    "subject": "alice",
-    "tenant": "tenant-a",
-    "roles": ["finance-reader"]
-  },
-  "query": "quarterly revenue",
-  "allowed_document_ids": ["a-finance-1", "a-public-1"],
-  "denied_document_ids": ["b-finance-1", "a-hr-1"]
+  "type": "revoke",
+  "subject": "alice",
+  "document_id": "a-finance-revoked"
 }
 ```
 
-`allowed_document_ids` is enforced as an allow-list. Any returned document not present in it is treated as a retrieval-scope violation. `denied_document_ids` is included to make high-value negative assertions explicit in the report.
+## Result reasons
+
+Each violating resource can report one or more reasons:
+
+- `outside_authorised_scope`
+- `explicitly_denied`
+- `cross_tenant`
+
+A returned chunk may carry multiple reasons at the same time.
+
+## Tests
+
+Run the regression suite:
+
+```bash
+python -m unittest discover \
+  -s tools/retrieval_scope_tester/tests \
+  -v
+```
+
+The tests cover exact chunk matching, same-document chunk isolation, cross-tenant detection, explicit deny handling, backward-compatible document allow-lists, multi-step lifecycle parsing, fixture step selection and HTTP header templating.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | All retrieval-scope cases passed |
-| `1` | Configuration or adapter execution error |
-| `2` | One or more unauthorised documents were retrieved |
+| `1` | Configuration, adapter, HTTP or mutation execution error |
+| `2` | One or more retrieval-scope violations were detected |
 
-This makes the tester suitable for CI or scheduled security regression checks once a real retriever adapter is supplied.
+This makes the tester suitable for CI and scheduled security regression checks.
 
 ## Scope
 
-This PoC tests retrieval authorisation and isolation only. It does not test prompt injection, generation behaviour, model safety, embedding inversion, corpus poisoning or parser vulnerabilities. Those require separate RAG security tests.
+This reference implementation tests retrieval authorisation, tenant isolation and security-state propagation. It does not test prompt injection, generation behaviour, model safety, embedding inversion, corpus poisoning or parser vulnerabilities. Those require separate RAG security tests.
